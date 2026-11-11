@@ -120,9 +120,14 @@ dl(){  # dl <url> <outfile> [min_bytes]
     *github.com*|*githubusercontent.com*|*ghcr.io*) [ -n "$GH_PROXY" ] && PAR="-x $GH_PROXY" ;;
   esac
 
-  for i in 1 2 3; do
+  # 断点续传：失败后保留已下载部分，用 curl -C - 接着下。
+  # 之前这里每次都 `: > "$out"` 清空，导致大文件（.NET 运行时 ~55MB）
+  # 在 8~12MB 处被重置后永远从 0 重来，看起来像「反复中断」。
+  for i in 1 2 3 4 5 6; do
     log "   下载 $name (第 $i 次)${total:+，共 $((total/1048576)) MB}"
-    : > "$out"
+    if [ "$i" -gt 1 ] && [ -s "$out" ]; then
+      log "      续传：沿用已下载的 $(stat -c%s "$out" 2>/dev/null) 字节"
+    fi
     # 后台监视文件增长，每 2 秒往控制台刷一次进度
     (
       tick=0
@@ -154,8 +159,8 @@ dl(){  # dl <url> <outfile> [min_bytes]
     ) &
     mon=$!
     local t0=$(date +%s)
-    if curl -fL $PAR --retry 2 --retry-delay 3 --connect-timeout 20 --max-time 900 \
-         -o "$out" "$url" >>"$LOG" 2>&1; then
+    if curl -fL $PAR --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 1800 \
+         -C - -o "$out" "$url" >>"$LOG" 2>&1; then
       kill "$mon" 2>/dev/null; wait "$mon" 2>/dev/null
       sz=$(stat -c%s "$out" 2>/dev/null || echo 0)
       # 内容校验：大小不足通常是镜像返回了 HTML 错误页
@@ -183,9 +188,10 @@ dl(){  # dl <url> <outfile> [min_bytes]
       return 0
     fi
     kill "$mon" 2>/dev/null; wait "$mon" 2>/dev/null
-    printf '\r[ll]   %s  第 %d 次中断\n' "$name" "$i"
-    log "   第 $i 次失败，5 秒后重试"
-    sleep 5
+    sz=$(stat -c%s "$out" 2>/dev/null || echo 0)
+    printf '\r[ll]   %s  第 %d 次中断（已存 %d MB）\n' "$name" "$i" "$((sz/1048576))"
+    log "   第 $i 次失败（已存 $sz 字节），3 秒后续传"
+    sleep 3
   done
   log "   !! 下载失败: $url"
   return 1
