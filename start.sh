@@ -46,10 +46,10 @@ UDP_PORTS="${PUBLIC_IP}:${PORT}:${PORT}"
 
 # ------------------------------------------------------------------ 内部变量
 BASE_DIR="/home/container"
-LL="$BASE_DIR/ll-server"
+LL="$BASE_DIR"          # 直接在根目录部署，不套 ll-server 子目录
 WS="$BASE_DIR/wine-stable11"
 LOG="$BASE_DIR/ll-install.log"
-export WINEPREFIX="$LL/.wine-official"
+export WINEPREFIX="$BASE_DIR/.wine-official"
 export WINEARCH=win64
 export WINEDEBUG=-all
 # wine 是 dpkg -x 解包到自定义前缀的，二进制仍按编译期路径 /opt/wine-stable 找库，

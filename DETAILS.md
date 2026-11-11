@@ -153,12 +153,12 @@ https://github.com/ZYDMYHZ/simpfun-levilamina-deploy/releases/tag/vc-runtime-202
 
 | 目标 | 删什么 | 耗时 |
 |---|---|---|
-| 完全从零 | `ll-server/` + `wine-stable11/` | 12~15 分钟 |
-| 只重装 LL | `ll-server/` 里的 `bedrock_server_mod.exe`、`mods/`、`tooth_lock.json`、`.lip/` | 8~10 分钟 |
-| 只重置配置 | `ll-server/server.properties`、`ll-server/mods/LeviLamina/config/Config.json` | 几秒 |
-| 只重置运行库 | `ll-server/.wine-official/` | 5~8 分钟 |
+| 完全从零 | 根目录 + `wine-stable11/` | 12~15 分钟 |
+| 只重装 LL | 根目录里的 `bedrock_server_mod.exe`、`mods/`、`tooth_lock.json`、`.lip/` | 8~10 分钟 |
+| 只重置配置 | `server.properties`、`mods/LeviLamina/config/Config.json` | 几秒 |
+| 只重置运行库 | `.wine-official/` | 5~8 分钟 |
 
-⚠️ `ll-server/worlds/` 是地图存档，删之前先备份。
+⚠️ `worlds/` 是地图存档，删之前先备份。
 
 ## 文件说明
 
