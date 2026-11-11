@@ -9,8 +9,9 @@
 ## 快速开始
 
 1. 面板文件管理器上传 `start.sh`、`proxy.conf` 到实例根目录（`/home/container`）
-2. 确认实例是 Bedrock 类型、Linux、Debian 系
-3. 启动实例，等待 15~25 分钟（首次要下载 Wine 270MB + BDS 230MB）
+2. 复制 `server.env.example` 为 `server.env`，填入自己的入口 IP 和端口
+3. 确认实例是 Bedrock 类型、Linux、Debian 系
+4. 启动实例，等待 12~15 分钟（首次要下载 Wine 215MB + VC++/.NET + BDS 230MB）
 
 完成后控制台会出现：
 
@@ -83,7 +84,9 @@ server-port=19132
 server-udp-ports=203.0.113.10:19132:19132
 ```
 
-⚠️ `server-udp-ports` 里的**入口 IP 是硬编码的**。如果简幻欢给你换了入口 IP，必须同步改 `start.sh` 的 `PUBLIC_IP`，否则 Door 会回来。
+⚠️ `server-udp-ports` 里的**入口 IP 来自 `server.env`**。如果简幻欢给你换了入口 IP，必须同步改 `server.env` 里的 `PUBLIC_IP`，否则 Door 会回来。
+
+⚠️ `PUBLIC_IP` 留空时，脚本会**跳过**写 `server-udp-ports` 并在控制台打警告——不会写进一个错误地址，但服务也连不上。
 
 ⚠️ **每次重装 LL，lip 都会把 `netherNetPatch.enable` 重置为 `true`**，所以这步不能只做一次。
 
@@ -150,7 +153,7 @@ https://github.com/ZYDMYHZ/simpfun-levilamina-deploy/releases/tag/vc-runtime-202
 
 | 目标 | 删什么 | 耗时 |
 |---|---|---|
-| 完全从零 | `ll-server/` + `wine-stable11/` | 15~25 分钟 |
+| 完全从零 | `ll-server/` + `wine-stable11/` | 12~15 分钟 |
 | 只重装 LL | `ll-server/` 里的 `bedrock_server_mod.exe`、`mods/`、`tooth_lock.json`、`.lip/` | 8~10 分钟 |
 | 只重置配置 | `ll-server/server.properties`、`ll-server/mods/LeviLamina/config/Config.json` | 几秒 |
 | 只重置运行库 | `ll-server/.wine-official/` | 5~8 分钟 |
@@ -159,9 +162,11 @@ https://github.com/ZYDMYHZ/simpfun-levilamina-deploy/releases/tag/vc-runtime-202
 
 ## 文件说明
 
-| 文件 | 作用 |
-|---|---|
-| `start.sh` | 主脚本，六步幂等安装 + 启动 |
-| `proxy.conf` | 代理开关配置 |
-| `server.properties` | 服务端配置模板（端口、正版验证、白名单） |
-| `Config.json` | LeviLamina 配置参考（已关闭 netherNetPatch） |
+| 文件 | 作用 | 必须上传 |
+|---|---|---|
+| `start.sh` | 主脚本，六步幂等安装 + 启动 | 是 |
+| `server.env` | 入口 IP 与端口（从 `server.env.example` 复制后填写） | 是 |
+| `proxy.conf` | GitHub 代理开关，默认关闭 | 可选 |
+| `server.properties` | 服务端配置模板（端口、正版验证、白名单） | 可选 |
+| `Config.json` | LeviLamina 配置参考（已关闭 netherNetPatch） | 可选 |
+| `README.md` / `DETAILS.md` | 文档本身 | 否 |
