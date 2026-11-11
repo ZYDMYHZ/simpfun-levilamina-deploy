@@ -270,8 +270,13 @@ if [ ! -f "$WINEPREFIX/drive_c/windows/syswow64/ntdll.dll" ]; then
   if [ -d "$WINEPREFIX" ]; then
     mv "$WINEPREFIX" "${WINEPREFIX}.old-$(date +%H%M%S)"   # 不删除，改名保留
   fi
-  xvfb-run -a wineboot -i
-  sleep 10
+  # 首次初始化要复制 2000+ 个 DLL，容器里通常 1~5 分钟，必须带超时和进度
+  log "   初始化 WINEPREFIX（首次 1~5 分钟，请耐心等待，不要以为卡死）"
+  timeout 900 xvfb-run -a --server-args="-screen 0 1024x768x24" wineboot -i 2>&1 | tail -8
+  log "   wineboot 结束"
+  # 等 wineserver 把所有文件落盘后再继续，否则后续 wine 调用会读到半成品 prefix
+  timeout 180 wineserver -w 2>/dev/null || true
+  log "   prefix: system32/ntdll.dll $([ -f "$WINEPREFIX/drive_c/windows/system32/ntdll.dll" ] && echo 有 || echo 无) | syswow64/ntdll.dll $([ -f "$WINEPREFIX/drive_c/windows/syswow64/ntdll.dll" ] && echo 有 || echo 无)"
   # .NET 10 要求 Windows 10 及以上（winetricks 装 dotnet10 时同样会设）
   xvfb-run -a wine reg add "HKCU\\Software\\Wine" /v Version /d win10 /f >>"$LOG" 2>&1 || true
   log "   wine Windows 版本已设为 win10"
