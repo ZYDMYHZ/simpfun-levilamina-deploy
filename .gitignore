@@ -7,3 +7,5 @@ node_modules/
 official/
 server.env
 backups/
+__pycache__/
+*.pyc
