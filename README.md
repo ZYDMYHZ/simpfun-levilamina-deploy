@@ -4,7 +4,7 @@
 
 ## 快速开始
 
-1. 上传 `start.sh`、`console_fwd.py`、`proxy.conf` 到实例根目录（面板里的 `/`）
+1. 把仓库里的文件**全部**上传到实例根目录（面板里的 `/`）
 2. 复制 `server.env.example` 为 `server.env`，填服务器 IP
    ```ini
    PUBLIC_IP=1.2.3.4
@@ -28,8 +28,6 @@ Game version 1.26.60+41512d4 with LeviLamina-26.60.6
 ## 控制台
 
 面板里可以直接输 `stop`、`list` 这类命令。
-
-BDS 拿到的是**管道 stdin**（由 `console_fwd.py` 转发），不是 tty —— wine 给 tty 会在启动阶段卡死，给 `/dev/null` 又收不到命令。
 
 ## 两个关键点
 
