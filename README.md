@@ -14,7 +14,7 @@
 看到这行就成功了：
 
 ```
-Game version 1.26.60+41512d4 with LeviLamina-26.60.6
+[CrashLogger] CrashLogger 启用成功
 ```
 
 ## 它会做什么
