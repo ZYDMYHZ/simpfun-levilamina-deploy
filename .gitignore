@@ -6,3 +6,4 @@ backup/
 node_modules/
 official/
 server.env
+backups/

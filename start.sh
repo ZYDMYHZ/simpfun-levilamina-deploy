@@ -36,8 +36,13 @@ _CONF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/proxy.conf"
 # 实例入口信息：优先环境变量，其次同目录 server.env，都没有则留空（下方会提示）
 _ENV="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/server.env"
 [ -f "$_ENV" ] && . "$_ENV"
-PUBLIC_IP="${PUBLIC_IP:-}"
+# ============ 入口参数 ============
+# SERVER_PORT  端口，简幻欢面板自动注入（= 实例端口），不用手填
+# PUBLIC_IP    唯一要填的：玩家连接用的外部入口 IP
 PORT="${SERVER_PORT:-19132}"
+PUBLIC_IP="${PUBLIC_IP:-}"
+# 写进 server.properties 的三段式：外部IP:外部端口:内部端口（直通，外=内）
+UDP_PORTS="${PUBLIC_IP}:${PORT}:${PORT}"
 
 # ------------------------------------------------------------------ 内部变量
 BASE_DIR="/home/container"
@@ -53,10 +58,15 @@ export WINELOADER="$WS/opt/wine-stable/bin/wine"
 export WINESERVER="$WS/opt/wine-stable/bin/wineserver"
 export WINEDLLPATH="$WS/opt/wine-stable/lib/wine"
 export WINEDATADIR="$WS/opt/wine-stable/share/wine"
-# 禁用 wine-mono 与 wine-gecko 的自动安装。
-# 不加这个，wineboot 首次初始化会弹窗要求安装 mono/gecko，无头容器里永远等不到确认。
-# 注意：我们装的是微软官方 .NET Runtime（不是 wine-mono），所以禁用 mscoree 不影响 lip。
-export WINEDLLOVERRIDES="mscoree,mshtml="
+# ⚠️ 绝对不要全局设置 WINEDLLOVERRIDES="mscoree,..."。
+# lip.exe 是 .NET apphost（PE32+ x64、内嵌 hostfxr，CLR 头为 0），运行时要靠 mscoree
+# 加载 System.Runtime.dll 等托管程序集。全局禁掉 mscoree 会让 lip 一启动就抛
+#   System.IO.FileNotFoundException: Could not load file or assembly
+#   '...\Microsoft.NETCore.App\10.0.15\System.Runtime.dll'
+#   wine: Unhandled exception 0xe0434353 ... starting debugger...
+# 官方镜像的 lip wrapper 只有一句 `wine /opt/lip/lip.exe "$@"`，从不设这个变量。
+# 只在 wineboot 首次建 prefix 那一次用命令级 override（防 mono/gecko 弹窗挂死），见第 2 步。
+WINEBOOT_OVERRIDES="mscoree,mshtml="
 # 显式指明 Windows 侧 .NET 位置，避免 apphost 找不到 runtime
 export DOTNET_ROOT='C:\Program Files\dotnet'
 export DOTNET_ROOT_X64='C:\Program Files\dotnet'
@@ -179,18 +189,67 @@ dl(){  # dl <url> <outfile> [min_bytes]
 }
 
 # 安装器执行：加超时，避免 wine 弹窗/挂起时无限等待
-wr(){  # wr <exe> [args...]
+wr(){  # wr <exe> [args...]  静默安装器：带心跳，避免长静默
   local exe="$1"; shift
-  printf '[ll]   运行 %s（最长 1200 秒，静默安装中...）\n' "$(basename "$exe")"
-  timeout 1200 xvfb-run -a wine "$exe" "$@"
+  local nm of
+  nm=$(basename "$exe")
+  of="/tmp/wr_$(printf '%s' "$nm" | tr -cd 'A-Za-z0-9._-' ).out"
+  log "   安装 $nm（静默模式，每 5 秒报进度）"
+  # runb 内部已带 </dev/null：wine 的 console 程序不等 stdin 才会正常退出
+  runb "$nm" 1200 "$of" timeout 1220 xvfb-run -a wine "$exe" "$@"
   local rc=$?
-  [ $rc -eq 124 ] && log "   !! 超时(1200s)被终止: $(basename "$exe")"
+  [ $rc -eq 124 ] && log "   !! 超时(1200s)被终止: $nm"
   return $rc
+}
+
+# 带心跳的后台执行器：解决「xvfb-run/wine 卡在退出、面板上长时间零输出」的问题。
+# 每 5 秒打印一次已运行秒数与产出字节数，超时则强制结束（含 Xvfb / wineserver 清理）。
+runb(){  # runb <描述> <超时秒> <输出文件> <命令...>
+  local d="$1" t="$2" f="$3"; shift 3
+  : > "$f"
+  ( "$@" </dev/null >>"$f" 2>&1 ) &
+  local p=$! e=0
+  while kill -0 "$p" 2>/dev/null && [ "$e" -lt "$t" ]; do
+    sleep 5; e=$((e + 5))
+    if kill -0 "$p" 2>/dev/null; then
+      log "   … $d 运行中 ${e}s（输出 $(wc -c < "$f" 2>/dev/null || echo 0) 字节）"
+    fi
+  done
+  if kill -0 "$p" 2>/dev/null; then
+    log "   !! $d 超过 ${t}s，强制结束"
+    kill -TERM "$p" 2>/dev/null
+    sleep 2
+    kill -KILL "$p" 2>/dev/null
+    wineserver -k 2>/dev/null || true
+    pkill -f "Xvfb :" 2>/dev/null || true
+  fi
+  wait "$p" 2>/dev/null
+  local rc=$?
+  tr -d '\000' < "$f" | tail -8
+  return $rc
+}
+
+# 带超时与面板反馈的 registry 操作（wine reg 每次都要拉起一个 wine 进程，无头下可能很慢）
+regop(){  # regop <描述> <reg 子命令及参数...>
+  local d="$1"; shift
+  if timeout 90 xvfb-run -a wine reg "$@" </dev/null >>"$LOG" 2>&1; then
+    log "      $d ✓"
+  else
+    log "      $d 失败（不中断，继续）"
+  fi
 }
 
 mkdir -p "$LL"
 cd "$LL" || { echo "无法进入 $LL"; exit 1; }
-log "===== 启动 $(date '+%F %T') | 入口 ${PUBLIC_IP}:${PORT} ====="
+# 端口来源提示：简幻欢面板会注入 SERVER_PORT，正常无需手填
+if [ -n "${SERVER_PORT:-}" ]; then
+  _port_src="面板 SERVER_PORT"
+elif [ "$PORT" = "19132" ]; then
+  _port_src="!! 未收到 SERVER_PORT，退回默认 19132"
+else
+  _port_src="server.env"
+fi
+log "===== 启动 $(date '+%F %T') | 监听 ${PORT}（${_port_src}）| 外部入口 ${PUBLIC_IP:-未设置}:${PORT} ====="
 
 # 代理只赋给 GH_PROXY，绝不写进全局 http_proxy（否则 WineHQ/dotnet 也会被套代理）
 GH_PROXY=""
@@ -233,8 +292,12 @@ if [ ! -d "$WS/opt/wine-stable/lib/wine/i386-windows" ]; then
   dl "$WINE_BASE/wine-stable-i386_${WINE_VER}_i386.deb"   /tmp/ws-i386.deb   90000000   || \
     dl "$WINE_BASE_FALLBACK/wine-stable-i386_${WINE_VER}_i386.deb"   /tmp/ws-i386.deb 90000000
   for f in /tmp/ws.deb /tmp/ws-amd64.deb /tmp/ws-i386.deb; do
-    [ -f "$f" ] && dpkg -x "$f" "$WS"
+    if [ -f "$f" ]; then
+      log "   解包 $(basename "$f") ($(du -h "$f" 2>/dev/null | cut -f1))"
+      dpkg -x "$f" "$WS"
+    fi
   done
+  log "   解包完成"
   log "   i386-windows 文件数: $(ls "$WS/opt/wine-stable/lib/wine/i386-windows" 2>/dev/null | wc -l)"
 fi
 export PATH="$WS/opt/wine-stable/bin:$PATH"
@@ -267,7 +330,7 @@ else
   log "   wine 库正常（x86_64-windows: $(ls "$WS/opt/wine-stable/lib/wine/x86_64-windows" 2>/dev/null | wc -l) 个文件）"
 fi
 
-if [ ! -f "$WINEPREFIX/drive_c/windows/syswow64/ntdll.dll" ]; then
+if [ ! -f "$WINEPREFIX/drive_c/windows/syswow64/ntdll.dll" ] || [ ! -f "$WINEPREFIX/system.reg" ]; then
   log "2/6 创建全新 WINEPREFIX"
   if [ -d "$WINEPREFIX" ]; then
     mv "$WINEPREFIX" "${WINEPREFIX}.old-$(date +%H%M%S)"   # 不删除，改名保留
@@ -275,30 +338,42 @@ if [ ! -f "$WINEPREFIX/drive_c/windows/syswow64/ntdll.dll" ]; then
   # 首次初始化要复制 2000+ 个 DLL，容器里通常 1~5 分钟，必须带超时和进度
   log "   初始化 WINEPREFIX（首次 1~5 分钟，请耐心等待，不要以为卡死）"
   # 诊断 1：X server 是否可用
-  timeout 60 xvfb-run -a xdpyinfo >/dev/null 2>&1 && log "   X server: 正常" || log "   X server: 异常"
+  log "   检查 X server（xvfb）"
+  timeout 60 xvfb-run -a xdpyinfo </dev/null >/dev/null 2>&1 && log "   X server: 正常" || log "   X server: 异常"
   # 诊断 2：用最简单的命令触发 prefix 创建（比 wineboot 简单，能过说明基础环境 OK）
   log "   诊断：wine cmd /c exit"
-  timeout 300 xvfb-run -a wine cmd /c exit 2>&1 | tail -6
+  WINEDLLOVERRIDES="$WINEBOOT_OVERRIDES" runb "wine cmd /c exit" 180 /tmp/wcmd.out \
+    timeout 200 xvfb-run -a wine cmd /c exit
   log "   诊断返回码 $?"
-  log "   诊断：prefix 文件 system32/ntdll.dll $([ -f "$WINEPREFIX/drive_c/windows/system32/ntdll.dll" ] && echo 已生成 || echo 未生成)"
+  log "   诊断：prefix 文件 system32/ntdll.dll $([ -f "$WINEPREFIX/drive_c/windows/system32/ntdll.dll" ] && echo 已生成 || echo 未生成) | syswow64/ntdll.dll $([ -f "$WINEPREFIX/drive_c/windows/syswow64/ntdll.dll" ] && echo 已生成 || echo 未生成)"
   # 正式初始化（带错误输出，便于定位卡在哪一步）
-  log "   执行 wineboot -i"
-  WINEDEBUG=+err,+warn timeout 900 xvfb-run -a --server-args="-screen 0 1024x768x24" wineboot -i 2>&1 | tail -20
+  log "   执行 wineboot -i（每 5 秒报一次进度）"
+  WINEDLLOVERRIDES="$WINEBOOT_OVERRIDES" WINEDEBUG=+err,+warn runb "wineboot -i" 600 /tmp/wboot.out \
+    timeout 620 xvfb-run -a --server-args="-screen 0 1024x768x24" wineboot -i
   log "   wineboot 结束"
-  # 等 wineserver 把所有文件落盘后再继续，否则后续 wine 调用会读到半成品 prefix
-  timeout 180 wineserver -w 2>/dev/null || true
+  # 让 wineserver 立即退出并把 registry 落盘。
+  # 用 -k（kill，退出前会 flush）而不是 -w（干等它自己退），实测 -w 会白等 1~3 分钟。
+  log "   结束 wineserver 并落盘（-k 立即生效）"
+  timeout 30 wineserver -k </dev/null 2>/dev/null || true
+  sleep 1
+  log "   wineserver 已退出，registry 已落盘"
   log "   prefix: system32/ntdll.dll $([ -f "$WINEPREFIX/drive_c/windows/system32/ntdll.dll" ] && echo 有 || echo 无) | syswow64/ntdll.dll $([ -f "$WINEPREFIX/drive_c/windows/syswow64/ntdll.dll" ] && echo 有 || echo 无)"
   # .NET 10 要求 Windows 10 及以上（winetricks 装 dotnet10 时同样会设）
-  xvfb-run -a wine reg add "HKCU\\Software\\Wine" /v Version /d win10 /f >>"$LOG" 2>&1 || true
-  log "   wine Windows 版本已设为 win10"
+  regop "设置 wine 版本 = win10" add "HKCU\\Software\\Wine" /v Version /d win10 /f
   # 关掉崩溃弹窗/调试器，否则崩溃后会挂起阻塞
-  xvfb-run -a wine reg add "HKCU\\Software\\Wine\\WineDbg" /v ShowCrashDialog /t REG_DWORD /d 0 /f >>"$LOG" 2>&1 || true
+  regop "关闭 WineDbg 崩溃弹窗" add "HKCU\\Software\\Wine\\WineDbg" /v ShowCrashDialog /t REG_DWORD /d 0 /f
 fi
 if [ -f "$WINEPREFIX/drive_c/windows/syswow64/ntdll.dll" ]; then
   log "   syswow64 正常"
 else
   log "   !! syswow64 缺失，后续运行库安装会失败，请检查 i386 包"
 fi
+# 每次启动都清掉 mscoree/mshtml 的 DLL override 残留（不管 prefix 是新建还是复用）。
+# 目的是与官方镜像保持一致：lip.exe 是 .NET apphost，必须能走 mscoree 加载托管程序集。
+regop "清除 mscoree override" delete "HKCU\\Software\\Wine\\DllOverrides" /v mscoree /f
+regop "清除 mshtml override"  delete "HKCU\\Software\\Wine\\DllOverrides" /v mshtml /f
+DLLOVR=$(timeout 90 xvfb-run -a wine reg query "HKCU\\Software\\Wine\\DllOverrides" </dev/null 2>/dev/null | tr -d '\r' | grep -ciE "mscoree|mshtml" || true)
+log "   DllOverrides 中 mscoree/mshtml 残留条目数: ${DLLOVR:-0}（应为 0，否则 lip 会起不来）"
 
 # ------------------------------------------------------------------ 3. VC++ 2026
 if [ ! -f "$WINEPREFIX/.done-vcrun2026" ]; then
@@ -364,19 +439,27 @@ if [ ! -f "$LL/bin/lip.exe" ]; then
   unzip -oq /tmp/lipwin.zip -d "$LL/bin" 2>>"$LOG"
 fi
 if [ ! -f bedrock_server_mod.exe ]; then
-  # lip 默认直连 GitHub，BDS 本体约 230MB；设置 github_proxy 走加速镜像
+  # 官方 wrapper 就是这么调的：`wine /opt/lip/lip.exe "$@"`（无 xvfb-run、无 WINEDLLOVERRIDES）
+  # 输出必须打到面板：之前重定向进日志，面板上只剩一行「设置 lip github_proxy =」，看着像卡死
   log "   设置 lip github_proxy = ${GH_MIRROR}"
-  timeout 600 xvfb-run -a wine "$LL/bin/lip.exe" config set github_proxy "${GH_MIRROR}" >>"$LOG" 2>&1
-  log "   (设置代理返回码 $?)"
+  runb "lip config set" 120 /tmp/lipcfg.out \
+    timeout 140 wine "$LL/bin/lip.exe" config set github_proxy "${GH_MIRROR}"
+  _rc=$?
+  log "   (设置代理返回码 $_rc)"
   log "   lip 自检：--version"
-  timeout 600 xvfb-run -a wine "$LL/bin/lip.exe" --version 2>&1 | tr -d '\000' | tail -3
-  log "   自检返回码 $?"
-  log "   执行 lip install github.com/LiteLDev/LeviLamina"
+  runb "lip --version" 120 /tmp/lipver.out \
+    timeout 140 wine "$LL/bin/lip.exe" --version
+  _rc=$?
+  log "   自检返回码 $_rc"
+  if [ "$_rc" != "0" ]; then
+    log "   !! lip 无法运行，.NET 运行时有问题，后续 install 必然失败，先停下"
+  fi
+  log "   执行 lip install github.com/LiteLDev/LeviLamina（下载 BDS 约 230MB，进度见下）"
   if [ -n "$GH_PROXY" ]; then
     yes | http_proxy="$GH_PROXY" https_proxy="$GH_PROXY" \
-      timeout 3600 xvfb-run -a wine "$LL/bin/lip.exe" install github.com/LiteLDev/LeviLamina
+      timeout 3600 wine "$LL/bin/lip.exe" install github.com/LiteLDev/LeviLamina </dev/null
   else
-    yes | timeout 3600 xvfb-run -a wine "$LL/bin/lip.exe" install github.com/LiteLDev/LeviLamina
+    yes | timeout 3600 wine "$LL/bin/lip.exe" install github.com/LiteLDev/LeviLamina
   fi
   log "   lip 退出码 $? | 产物: $(ls | tr '\n' ' ')"
 fi
@@ -385,41 +468,82 @@ fi
 log "6/6 写入配置"
 if [ -f server.properties ]; then
   sed -i "s/^server-port=.*/server-port=${PORT}/" server.properties
-  if grep -q '^server-udp-ports=' server.properties; then
-    sed -i "s|^server-udp-ports=.*|server-udp-ports=${PUBLIC_IP}:${PORT}:${PORT}|" server.properties
+  # lip install 解压 bds 包时会把 server.properties 重置成默认的 server-udp-ports=19132，
+  # 所以这里必须每次无条件写成三段式 外部IP:外部端口:内部端口，不能"留空就不动"。
+  if [ -n "$PUBLIC_IP" ]; then
+    if grep -q '^server-udp-ports=' server.properties; then
+      sed -i "s|^server-udp-ports=.*|server-udp-ports=${UDP_PORTS}|" server.properties
+    else
+      printf 'server-udp-ports=%s\n' "$UDP_PORTS" >> server.properties
+    fi
+    log "   server-udp-ports = ${UDP_PORTS}"
   else
-    printf 'server-udp-ports=%s:%s:%s\n' "$PUBLIC_IP" "$PORT" "$PORT" >> server.properties
+    # 没给 PUBLIC_IP 时，如果文件里已经是三段式就保留，避免把它改坏；否则必须喊出来
+    _cur=$(grep '^server-udp-ports=' server.properties 2>/dev/null | cut -d= -f2-)
+    case "$_cur" in
+      *:*:*)
+        log "   PUBLIC_IP 未设置 → 保留文件里已有的三段式: ${_cur}"
+        ;;
+      *)
+        log "   !! PUBLIC_IP 未设置，且 server-udp-ports 当前是单端口值 '${_cur:-空}'"
+        log "      玩家将连不上（客户端会报 Door）。请设置环境变量 PUBLIC_IP=<外部入口IP>"
+        log "      填法：server.env 里写 PUBLIC_IP=1.2.3.4"
+        ;;
+    esac
   fi
   sed -i 's/^online-mode=.*/online-mode=false/; s/^allow-list=.*/allow-list=false/' server.properties
 fi
 CFG="mods/LeviLamina/config/Config.json"
 if [ -f "$CFG" ]; then
-  # 只改 netherNetPatch 块内的 enable，不动 vulnerabilityFixes 等其他项
+  # netherNetPatch 在 targeted 段下，且 JSON 是缩进的 —— 绝不能写行首锚点 ^"netherNetPatch"，
+  # 那样永远匹配不到，会静默失效（LL 日志里会照旧打印「已为 NetherNet 配置 N 个 STUN 服务器」）。
+  # 范围限定在 "netherNetPatch" 到本块结束的 } 之间，不碰 vulnerabilityFixes。
   sed -i '/"netherNetPatch"/,/}/ s/"enable": *true/"enable": false/' "$CFG"
   log "   netherNetPatch 当前值："
   grep -A2 '"netherNetPatch"' "$CFG" | head -4
+else
+  log "   !! 找不到 $CFG —— LeviLamina 首次运行后才会生成它，本次来不及改"
+  log "      若启动日志出现「已为 NetherNet 配置 N 个 STUN 服务器」，说明 netherNetPatch 仍为开，Door 会复发"
+  log "      下次重启本步骤就会自动把它改成 enable=false"
 fi
-log "   server-port=${PORT}  server-udp-ports=${PUBLIC_IP}:${PORT}:${PORT}"
+log "   生效配置: server-port=$(grep '^server-port=' server.properties 2>/dev/null | cut -d= -f2)  server-udp-ports=$(grep '^server-udp-ports=' server.properties 2>/dev/null | cut -d= -f2)"
 
 # ------------------------------------------------------------------ 启动
 if [ -f bedrock_server_mod.exe ]; then
   log "===== 启动 LeviLamina ====="
-  # 用 FIFO 转发 stdin：既能接收面板控制台命令（如 stop），
-  # 又能在 BDS 退出后让脚本继续往下走并结束进程，
-  # 否则 "cat |" 里的 cat 会一直阻塞在 stdin 上，导致实例停不下来。
-  FIFO="/tmp/bds_stdin_$$"
-  mkfifo "$FIFO" 2>/dev/null
-  cat > "$FIFO" 2>/dev/null &
-  CAT_PID=$!
-  xvfb-run -a wine bedrock_server_mod.exe < "$FIFO"
+  # 控制台输入：不做任何转发，让 BDS 直接继承面板的控制台。
+  # 之前包了一层 `cat > fifo` 转发 stdin —— 后台进程读控制终端会被 SIGTTIN 停住，
+  # 而且管道送给 Windows 程序的 console 队列也不可靠，结果就是发 stop 没反应。
+  # 原生 BDS 用 ReadConsole(Input) 读控制台，必须拿到真实的 tty/pty。
+  # 一律用 script 把 BDS 放进一个 pty 里跑：
+  #   stdin 直接继承 tty 时，xvfb-run + wine 会在启动阶段卡死（实测 2 分钟零输出）；
+  #   而 pty 既能喂进 stop/list，又不会卡。
+  log "   控制台工具：script=$(command -v script 2>/dev/null || echo 无) tmux=$(command -v tmux 2>/dev/null || echo 无)"
+  if command -v script >/dev/null 2>&1; then
+    log "   用 script 承载控制台（pty），stop/list 可直接用"
+    # 用 typescript 文件代替 /dev/null：pty 里的所有输入输出都会落盘，
+    # 这样即使面板显示有 bug（简幻欢已知问题），也能从 console.typescript 确认命令是否真的送达。
+    log "   控制台记录：$BASE_DIR/console.typescript"
+    script -q -e -c "xvfb-run -a wine bedrock_server_mod.exe" "$BASE_DIR/console.typescript"
+  elif command -v tmux >/dev/null 2>&1; then
+    # 简幻欢社区脚本就是用 tmux 接控制台的：tmux 给 pane 一个 pty，
+    # 面板输入经 attach 直达，或用 tmux send-keys -t bds "stop" Enter 程序化发命令。
+    log "   用 tmux 承载控制台（会话名 bds）"
+    tmux kill-session -t bds 2>/dev/null || true
+    tmux new-session -d -s bds -x 200 -y 50 "xvfb-run -a wine bedrock_server_mod.exe"
+    tmux attach -t bds 2>/dev/null || true
+    while tmux has-session -t bds 2>/dev/null; do sleep 2; done
+  else
+    log "   !! 既无 script 也无 tmux，控制台拿不到 pty，stop 无效（请用面板停止按钮）"
+    xvfb-run -a wine bedrock_server_mod.exe
+  fi
   RC=$?
-  kill "$CAT_PID" 2>/dev/null
-  wait "$CAT_PID" 2>/dev/null
-  mv -f "$FIFO" "/tmp/bds_stdin_done_$$" 2>/dev/null || true
+  log "   控制台已断开（BDS 退出返回码 $RC）"
   log "===== BDS 已退出（返回码 $RC），清理 wine 进程 ====="
   "$WS/opt/wine-stable/bin/wineserver" -k 2>/dev/null || true
   exit "$RC"
 else
-  log "!! 仍未生成 bedrock_server_mod.exe，请查看 $LOG"
-  sleep infinity
+  log "!! 仍未生成 bedrock_server_mod.exe —— lip install 失败，请看 $LOG"
+  log "   （不在这里挂住，直接退出，方便你看到失败而不是又一个静默）"
+  exit 1
 fi

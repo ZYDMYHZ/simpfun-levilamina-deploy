@@ -5,7 +5,10 @@
 ## 快速开始
 
 1. 上传 `start.sh`、`proxy.conf` 到实例根目录（面板里的 `/`）
-2. 复制 `server.env.example` 为 `server.env`，填入自己的入口 IP 和端口
+2. 复制 `server.env.example` 为 `server.env`，填服务器 IP
+   ```ini
+   PUBLIC_IP=1.2.3.4
+   ```
 3. 启动实例，等 12~15 分钟
 
 看到这行就成功了：
