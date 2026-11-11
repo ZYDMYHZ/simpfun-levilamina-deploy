@@ -53,8 +53,10 @@ export WINELOADER="$WS/opt/wine-stable/bin/wine"
 export WINESERVER="$WS/opt/wine-stable/bin/wineserver"
 export WINEDLLPATH="$WS/opt/wine-stable/lib/wine"
 export WINEDATADIR="$WS/opt/wine-stable/share/wine"
-# 故意不设 WINEDLLOVERRIDES：官方 entrypoint 只设 WINEDEBUG=-all，
-# 禁用 mscoree 会干扰 .NET 宿主加载
+# 禁用 wine-mono 与 wine-gecko 的自动安装。
+# 不加这个，wineboot 首次初始化会弹窗要求安装 mono/gecko，无头容器里永远等不到确认。
+# 注意：我们装的是微软官方 .NET Runtime（不是 wine-mono），所以禁用 mscoree 不影响 lip。
+export WINEDLLOVERRIDES="mscoree,mshtml="
 # 显式指明 Windows 侧 .NET 位置，避免 apphost 找不到 runtime
 export DOTNET_ROOT='C:\Program Files\dotnet'
 export DOTNET_ROOT_X64='C:\Program Files\dotnet'
@@ -272,6 +274,7 @@ if [ ! -f "$WINEPREFIX/drive_c/windows/syswow64/ntdll.dll" ]; then
   fi
   # 首次初始化要复制 2000+ 个 DLL，容器里通常 1~5 分钟，必须带超时和进度
   log "   初始化 WINEPREFIX（首次 1~5 分钟，请耐心等待，不要以为卡死）"
+  # WINEDLLOVERRIDES 已在顶部设为 mscoree,mshtml —— 阻止 wineboot 弹窗要求安装 mono/gecko
   timeout 900 xvfb-run -a --server-args="-screen 0 1024x768x24" wineboot -i 2>&1 | tail -8
   log "   wineboot 结束"
   # 等 wineserver 把所有文件落盘后再继续，否则后续 wine 调用会读到半成品 prefix
