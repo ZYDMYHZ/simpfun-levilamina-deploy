@@ -1,0 +1,8 @@
+cache/
+*.deb
+*.exe
+*.zip
+backup/
+node_modules/
+official/
+server.env
