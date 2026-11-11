@@ -47,6 +47,12 @@ LOG="$BASE_DIR/ll-install.log"
 export WINEPREFIX="$LL/.wine-official"
 export WINEARCH=win64
 export WINEDEBUG=-all
+# wine 是 dpkg -x 解包到自定义前缀的，二进制仍按编译期路径 /opt/wine-stable 找库，
+# 不显式指定就会报 "could not load kernel32.dll, status c0000135"
+export WINELOADER="$WS/opt/wine-stable/bin/wine"
+export WINESERVER="$WS/opt/wine-stable/bin/wineserver"
+export WINEDLLPATH="$WS/opt/wine-stable/lib/wine"
+export WINEDATADIR="$WS/opt/wine-stable/share/wine"
 # 故意不设 WINEDLLOVERRIDES：官方 entrypoint 只设 WINEDEBUG=-all，
 # 禁用 mscoree 会干扰 .NET 宿主加载
 # 显式指明 Windows 侧 .NET 位置，避免 apphost 找不到 runtime
@@ -252,6 +258,13 @@ else
 fi
 
 # ------------------------------------------------------------------ 2. prefix
+# 自检：wine 能否找到自己的 DLL（缺 WINEDLLPATH 时这里就会失败）
+if [ ! -f "$WS/opt/wine-stable/lib/wine/x86_64-windows/kernel32.dll" ]; then
+  log "   !! 找不到 wine 的 kernel32.dll，wine 安装不完整"
+else
+  log "   wine 库正常（x86_64-windows: $(ls "$WS/opt/wine-stable/lib/wine/x86_64-windows" 2>/dev/null | wc -l) 个文件）"
+fi
+
 if [ ! -f "$WINEPREFIX/drive_c/windows/syswow64/ntdll.dll" ]; then
   log "2/6 创建全新 WINEPREFIX"
   if [ -d "$WINEPREFIX" ]; then
