@@ -503,16 +503,17 @@ if [ -f server.properties ]; then
   sed -i 's/^online-mode=.*/online-mode=false/; s/^allow-list=.*/allow-list=false/' server.properties
 fi
 CFG="mods/LeviLamina/config/Config.json"
-# Config.json 由 LeviLamina 首次运行时才生成，那时本步骤已经跑完了 ——
-# 于是第一次启动永远是 netherNetPatch=true，客户端必报 Door。
-# 解决：文件不存在时先用 Config.default.json 预置一份（netherNetPatch 已经是 false），
-# LL 启动时直接读它，第一次就不会开 STUN。
-if [ ! -f "$CFG" ] && [ -f "$BASE_DIR/Config.default.json" ]; then
-  mkdir -p "$(dirname "$CFG")"
-  cp "$BASE_DIR/Config.default.json" "$CFG"
-  log "   预置 $CFG（来自 Config.default.json，netherNetPatch 已为 false）"
-fi
-if [ -f "$CFG" ]; then
+# 把 netherNetPatch 关掉。这个开关打开时 LL 会走 STUN 探测外部地址并通告给客户端，
+# 在简幻欢这种直通端口环境下探到的是错误地址，客户端就报 Door。
+# 文件由 LeviLamina 生成，所以启动前和退出后各改一次，保证下次读到的都是 false。
+fix_nnp(){
+  [ -f "$CFG" ] || return 1
+  # 它在 targeted 段下且 JSON 有缩进 —— 不能写行首锚点 ^"netherNetPatch"，那样永远匹配不到。
+  # 范围限定在 "netherNetPatch" 到本块结束的 } 之间，不碰 vulnerabilityFixes。
+  sed -i '/"netherNetPatch"/,/}/ s/"enable": *true/"enable": false/' "$CFG"
+  return 0
+}
+if fix_nnp; then
   # netherNetPatch 在 targeted 段下，且 JSON 是缩进的 —— 绝不能写行首锚点 ^"netherNetPatch"，
   # 那样永远匹配不到，会静默失效（LL 日志里会照旧打印「已为 NetherNet 配置 N 个 STUN 服务器」）。
   # 范围限定在 "netherNetPatch" 到本块结束的 } 之间，不碰 vulnerabilityFixes。
@@ -520,9 +521,9 @@ if [ -f "$CFG" ]; then
   log "   netherNetPatch 当前值："
   grep -A2 '"netherNetPatch"' "$CFG" | head -4
 else
-  log "   !! 找不到 $CFG —— LeviLamina 首次运行后才会生成它，本次来不及改"
+  log "   $CFG 还没生成（LeviLamina 首次运行后才有）—— 本次跳过"
   log "      若启动日志出现「已为 NetherNet 配置 N 个 STUN 服务器」，说明 netherNetPatch 仍为开，Door 会复发"
-  log "      下次重启本步骤就会自动把它改成 enable=false"
+  log "      本次退出时会再改一次，下次启动起就是 false"
 fi
 log "   生效配置: server-port=$(grep '^server-port=' server.properties 2>/dev/null | cut -d= -f2)  server-udp-ports=$(grep '^server-udp-ports=' server.properties 2>/dev/null | cut -d= -f2)"
 
@@ -564,6 +565,8 @@ if [ -f bedrock_server_mod.exe ]; then
     RC=$?
   fi
   log "===== BDS 已退出（返回码 $RC），清理 wine 进程 ====="
+  # BDS 启动后 Config.json 才存在，这里补一次，保证下次启动读到的是 false
+  if fix_nnp; then log "   退出后复查 netherNetPatch = $(grep -A1 '"netherNetPatch"' "$CFG" | grep -o 'true\|false' | head -1)"; fi
   "$WS/opt/wine-stable/bin/wineserver" -k 2>/dev/null || true
   exit "$RC"
 else
