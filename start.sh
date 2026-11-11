@@ -67,6 +67,9 @@ export WINEDATADIR="$WS/opt/wine-stable/share/wine"
 # 官方镜像的 lip wrapper 只有一句 `wine /opt/lip/lip.exe "$@"`，从不设这个变量。
 # 只在 wineboot 首次建 prefix 那一次用命令级 override（防 mono/gecko 弹窗挂死），见第 2 步。
 WINEBOOT_OVERRIDES="mscoree,mshtml="
+# 与简幻欢上跑得通的整合包一致：只禁这两个无关组件（wine 的菜单构建器与 explorer），
+# 不碰 mscoree —— 碰了 lip 就起不来。
+export WINEDLLOVERRIDES="winemenubuilder.exe=d,explorer.exe=d"
 # 显式指明 Windows 侧 .NET 位置，避免 apphost 找不到 runtime
 export DOTNET_ROOT='C:\Program Files\dotnet'
 export DOTNET_ROOT_X64='C:\Program Files\dotnet'
@@ -511,34 +514,40 @@ log "   生效配置: server-port=$(grep '^server-port=' server.properties 2>/de
 # ------------------------------------------------------------------ 启动
 if [ -f bedrock_server_mod.exe ]; then
   log "===== 启动 LeviLamina ====="
-  # 控制台输入：不做任何转发，让 BDS 直接继承面板的控制台。
-  # 之前包了一层 `cat > fifo` 转发 stdin —— 后台进程读控制终端会被 SIGTTIN 停住，
-  # 而且管道送给 Windows 程序的 console 队列也不可靠，结果就是发 stop 没反应。
-  # 原生 BDS 用 ReadConsole(Input) 读控制台，必须拿到真实的 tty/pty。
-  # 一律用 script 把 BDS 放进一个 pty 里跑：
-  #   stdin 直接继承 tty 时，xvfb-run + wine 会在启动阶段卡死（实测 2 分钟零输出）；
-  #   而 pty 既能喂进 stop/list，又不会卡。
-  log "   控制台工具：script=$(command -v script 2>/dev/null || echo 无) tmux=$(command -v tmux 2>/dev/null || echo 无)"
-  if command -v script >/dev/null 2>&1; then
-    log "   用 script 承载控制台（pty），stop/list 可直接用"
-    # 用 typescript 文件代替 /dev/null：pty 里的所有输入输出都会落盘，
-    # 这样即使面板显示有 bug（简幻欢已知问题），也能从 console.typescript 确认命令是否真的送达。
-    log "   控制台记录：$BASE_DIR/console.typescript"
-    script -q -e -c "xvfb-run -a wine bedrock_server_mod.exe" "$BASE_DIR/console.typescript"
-  elif command -v tmux >/dev/null 2>&1; then
-    # 简幻欢社区脚本就是用 tmux 接控制台的：tmux 给 pane 一个 pty，
-    # 面板输入经 attach 直达，或用 tmux send-keys -t bds "stop" Enter 程序化发命令。
-    log "   用 tmux 承载控制台（会话名 bds）"
-    tmux kill-session -t bds 2>/dev/null || true
-    tmux new-session -d -s bds -x 200 -y 50 "xvfb-run -a wine bedrock_server_mod.exe"
-    tmux attach -t bds 2>/dev/null || true
-    while tmux has-session -t bds 2>/dev/null; do sleep 2; done
+
+  # (1) 不要用 xvfb-run：它每次换 display 号、且会包一层，wine 里外三层容易出怪事。
+  #     社区整合包的做法是手动起一个固定的 Xvfb :0。
+  export DISPLAY=:0
+  if xdpyinfo -display :0 >/dev/null 2>&1; then
+    log "   X: :0 已存在，直接复用"
   else
-    log "   !! 既无 script 也无 tmux，控制台拿不到 pty，stop 无效（请用面板停止按钮）"
-    xvfb-run -a wine bedrock_server_mod.exe
+    log "   X: 启动 Xvfb :0（1280x1024x24）"
+    Xvfb :0 -screen 0 1280x1024x24 >/dev/null 2>&1 &
+    sleep 3
+    xdpyinfo -display :0 >/dev/null 2>&1 && log "   X: :0 就绪" || log "   X: :0 起不来（wine 仍可能工作）"
   fi
-  RC=$?
-  log "   控制台已断开（BDS 退出返回码 $RC）"
+
+  # (2) 终端宽度：不设这一项，面板里的输出会乱换行、把你的输入回显冲掉，
+  #     看起来就像「打进去的字不显示」。社区整合包固定 cols 500。
+  stty cols 500 2>/dev/null || true
+  log "   终端宽度: $(stty size 2>/dev/null | awk '{print $2" 列"}' || echo 未设置)"
+
+  # (3) 控制台输入：交给 python 转发器。
+  #     BDS 拿到的是普通管道 stdin（不是 tty），wine 不会卡；
+  #     容器 stdin 由转发器逐行写进那条管道，stop/list 等命令才能真正送达。
+  PY=""
+  for c in /mise/shims/python3 /usr/bin/python3 /usr/local/bin/python3 python3 python; do
+    if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
+  done
+  if [ -n "$PY" ]; then
+    log "   控制台: $PY console_fwd.py 转发 stdin（stop/list 可用）"
+    "$PY" "$BASE_DIR/console_fwd.py" "wine bedrock_server_mod.exe"
+    RC=$?
+  else
+    log "   !! 找不到 python，控制台输入无法转发，stop 将无效"
+    xvfb-run -a wine bedrock_server_mod.exe </dev/null
+    RC=$?
+  fi
   log "===== BDS 已退出（返回码 $RC），清理 wine 进程 ====="
   "$WS/opt/wine-stable/bin/wineserver" -k 2>/dev/null || true
   exit "$RC"
