@@ -274,8 +274,16 @@ if [ ! -f "$WINEPREFIX/drive_c/windows/syswow64/ntdll.dll" ]; then
   fi
   # 首次初始化要复制 2000+ 个 DLL，容器里通常 1~5 分钟，必须带超时和进度
   log "   初始化 WINEPREFIX（首次 1~5 分钟，请耐心等待，不要以为卡死）"
-  # WINEDLLOVERRIDES 已在顶部设为 mscoree,mshtml —— 阻止 wineboot 弹窗要求安装 mono/gecko
-  timeout 900 xvfb-run -a --server-args="-screen 0 1024x768x24" wineboot -i 2>&1 | tail -8
+  # 诊断 1：X server 是否可用
+  timeout 60 xvfb-run -a xdpyinfo >/dev/null 2>&1 && log "   X server: 正常" || log "   X server: 异常"
+  # 诊断 2：用最简单的命令触发 prefix 创建（比 wineboot 简单，能过说明基础环境 OK）
+  log "   诊断：wine cmd /c exit"
+  timeout 300 xvfb-run -a wine cmd /c exit 2>&1 | tail -6
+  log "   诊断返回码 $?"
+  log "   诊断：prefix 文件 system32/ntdll.dll $([ -f "$WINEPREFIX/drive_c/windows/system32/ntdll.dll" ] && echo 已生成 || echo 未生成)"
+  # 正式初始化（带错误输出，便于定位卡在哪一步）
+  log "   执行 wineboot -i"
+  WINEDEBUG=+err,+warn timeout 900 xvfb-run -a --server-args="-screen 0 1024x768x24" wineboot -i 2>&1 | tail -20
   log "   wineboot 结束"
   # 等 wineserver 把所有文件落盘后再继续，否则后续 wine 调用会读到半成品 prefix
   timeout 180 wineserver -w 2>/dev/null || true
