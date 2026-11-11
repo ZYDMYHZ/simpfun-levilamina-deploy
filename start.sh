@@ -503,6 +503,15 @@ if [ -f server.properties ]; then
   sed -i 's/^online-mode=.*/online-mode=false/; s/^allow-list=.*/allow-list=false/' server.properties
 fi
 CFG="mods/LeviLamina/config/Config.json"
+# Config.json 由 LeviLamina 首次运行时才生成，那时本步骤已经跑完了 ——
+# 于是第一次启动永远是 netherNetPatch=true，客户端必报 Door。
+# 解决：文件不存在时先用 Config.default.json 预置一份（netherNetPatch 已经是 false），
+# LL 启动时直接读它，第一次就不会开 STUN。
+if [ ! -f "$CFG" ] && [ -f "$BASE_DIR/Config.default.json" ]; then
+  mkdir -p "$(dirname "$CFG")"
+  cp "$BASE_DIR/Config.default.json" "$CFG"
+  log "   预置 $CFG（来自 Config.default.json，netherNetPatch 已为 false）"
+fi
 if [ -f "$CFG" ]; then
   # netherNetPatch 在 targeted 段下，且 JSON 是缩进的 —— 绝不能写行首锚点 ^"netherNetPatch"，
   # 那样永远匹配不到，会静默失效（LL 日志里会照旧打印「已为 NetherNet 配置 N 个 STUN 服务器」）。
